@@ -319,7 +319,6 @@ def audit_all_devices():
         print("\nUser Account Check:")
         ssh_client = paramiko.SSHClient()
         ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        
         try:
             ssh_client.connect(
                 device['ip'],
@@ -327,106 +326,115 @@ def audit_all_devices():
                 password=device['password'],
                 timeout=10
             )
-            
-            # Get list of users and their password aging info
-            stdin, stdout, stderr = ssh_client.exec_command('cat /etc/passwd; echo "---"; cat /etc/shadow')
-            output = stdout.read().decode()
-            passwd_content, shadow_content = output.split('---')
-            
-            # Check required users
-            for user_rule in user_rules:
-                user_exists = any(line.startswith(f"{user_rule.username}:") 
-                                for line in passwd_content.splitlines())
-                
-                if user_rule.type == "required" and not user_exists:
-                    print(f"  [NON-COMPLIANT] Required user '{user_rule.username}' not found (Severity: {user_rule.severity})")
-                elif user_rule.type == "prohibited" and user_exists:
-                    print(f"  [NON-COMPLIANT] Prohibited user '{user_rule.username}' exists (Severity: {user_rule.severity})")
-                else:
-                    status = "exists" if user_rule.type == "required" else "does not exist"
-                    print(f"  [COMPLIANT] User '{user_rule.username}' {status}")
-            
-            # Check password policy
-            print("\nPassword Policy Check:")
-            stdin, stdout, stderr = ssh_client.exec_command('chage -l audituser')
-            chage_output = stdout.read().decode()
-            
             try:
-                max_days = int([line for line in chage_output.splitlines() 
-                              if "Maximum" in line][0].split()[-1])
-                min_days = int([line for line in chage_output.splitlines() 
-                              if "Minimum" in line][0].split()[-1])
-                warn_days = int([line for line in chage_output.splitlines() 
-                               if "warning" in line.lower()][0].split()[-1])
                 
-                if max_days > password_policy.max_days:
-                    print(f"  [NON-COMPLIANT] Maximum password age ({max_days}) exceeds policy ({password_policy.max_days})")
-                else:
-                    print(f"  [COMPLIANT] Maximum password age")
-                    
-                if min_days < password_policy.min_days:
-                    print(f"  [NON-COMPLIANT] Minimum password age ({min_days}) below policy ({password_policy.min_days})")
-                else:
-                    print(f"  [COMPLIANT] Minimum password age")
-                    
-                if warn_days < password_policy.warn_age:
-                    print(f"  [NON-COMPLIANT] Password warning period ({warn_days}) below policy ({password_policy.warn_age})")
-                else:
-                    print(f"  [COMPLIANT] Password warning period")
-                    
-            except (IndexError, ValueError) as e:
-                print(f"  [ERROR] Could not parse password aging information: {str(e)}")
                 
+                # Get list of users and their password aging info
+                stdin, stdout, stderr = ssh_client.exec_command('cat /etc/passwd; echo "---"; cat /etc/shadow')
+                output = stdout.read().decode()
+                passwd_content, shadow_content = output.split('---')
+                
+                # Check required users
+                for user_rule in user_rules:
+                    user_exists = any(line.startswith(f"{user_rule.username}:") 
+                                    for line in passwd_content.splitlines())
+                    
+                    if user_rule.type == "required" and not user_exists:
+                        print(f"  [NON-COMPLIANT] Required user '{user_rule.username}' not found (Severity: {user_rule.severity})")
+                    elif user_rule.type == "prohibited" and user_exists:
+                        print(f"  [NON-COMPLIANT] Prohibited user '{user_rule.username}' exists (Severity: {user_rule.severity})")
+                    else:
+                        status = "exists" if user_rule.type == "required" else "does not exist"
+                        print(f"  [COMPLIANT] User '{user_rule.username}' {status}")
+                
+                # Check password policy
+                print("\nPassword Policy Check:")
+                stdin, stdout, stderr = ssh_client.exec_command('chage -l audituser')
+                chage_output = stdout.read().decode()
+                
+                try:
+                    max_days = int([line for line in chage_output.splitlines() 
+                                if "Maximum" in line][0].split()[-1])
+                    min_days = int([line for line in chage_output.splitlines() 
+                                if "Minimum" in line][0].split()[-1])
+                    warn_days = int([line for line in chage_output.splitlines() 
+                                if "warning" in line.lower()][0].split()[-1])
+                    
+                    if max_days > password_policy.max_days:
+                        print(f"  [NON-COMPLIANT] Maximum password age ({max_days}) exceeds policy ({password_policy.max_days})")
+                    else:
+                        print(f"  [COMPLIANT] Maximum password age")
+                        
+                    if min_days < password_policy.min_days:
+                        print(f"  [NON-COMPLIANT] Minimum password age ({min_days}) below policy ({password_policy.min_days})")
+                    else:
+                        print(f"  [COMPLIANT] Minimum password age")
+                        
+                    if warn_days < password_policy.warn_age:
+                        print(f"  [NON-COMPLIANT] Password warning period ({warn_days}) below policy ({password_policy.warn_age})")
+                    else:
+                        print(f"  [COMPLIANT] Password warning period")
+                        
+                except (IndexError, ValueError) as e:
+                    print(f"  [ERROR] Could not parse password aging information: {str(e)}")
+                    
+            except Exception as e:
+                print(f"  [ERROR] Failed to check user compliance: {str(e)}")
+            
+
+            # Add firewall compliance check
+            print("\nFirewall Rules Check:")
+            try:
+                # Get iptables rules
+                _, stdout, _ = ssh_client.exec_command('sudo iptables -L -n')
+                iptables_output = stdout.read().decode()
+                
+                # Get default policies
+                # i dont think i understand the zero packets, zero bytes. are we not pulling out the right information?
+                # if accepting nothing is the same as dropping it, then why is our output policy not anything either?
+                chain_policies = {}
+                current_chain = None
+                for line in iptables_output.splitlines():
+                    if line.startswith('Chain'):
+                        current_chain = line.split()[1]
+                        policy = line.split('(policy ')[1].split(')')[0] if '(policy' in line else None
+                        if policy:
+                            chain_policies[current_chain] = policy
+
+                # Check default policies
+                print("\nDefault Policy Check:")
+                for chain in ['INPUT', 'FORWARD', 'OUTPUT']:
+                    expected = getattr(default_policy, chain)
+                    actual = chain_policies.get(chain)
+                    if actual != expected:
+                        print(f"  [NON-COMPLIANT] Chain {chain} policy is {actual}, should be {expected}")
+                    else:
+                        print(f"  [COMPLIANT] Chain {chain} policy is {expected}")
+
+                # Check firewall rules
+                print("\nRule Check:")
+                for rule in firewall_rules:
+                    rule_pattern = f"{rule.protocol.upper()}.*dpt:{rule.port}"
+                    rule_exists = any(rule_pattern in line for line in iptables_output.splitlines())
+                    
+                    # why is it always saying that the ports are blocked/dropped/not allowed when they are?
+                    # i think the input/forward/output policy is an issue too
+                    # because theyre NOT correctly DROP. they should be ACCEPT.
+                    if rule.type == "allowed" and not rule_exists:
+                        print(f"  [NON-COMPLIANT] Required port {rule.port}/{rule.protocol} not allowed "
+                            f"(Severity: {rule.severity})")
+                    elif rule.type == "blocked" and rule_exists:
+                        print(f"  [NON-COMPLIANT] Port {rule.port}/{rule.protocol} should be blocked "
+                            f"(Severity: {rule.severity})")
+                    else:
+                        status = "allowed" if rule.type == "allowed" else "blocked"
+                        print(f"  [COMPLIANT] Port {rule.port}/{rule.protocol} correctly {status}")
+
+            except Exception as e:
+                print(f"  [ERROR] Failed to check firewall compliance: {str(e)}")
         except Exception as e:
-            print(f"  [ERROR] Failed to check user compliance: {str(e)}")
+            print(f"  [ERROR] Could not connect to device {device['ip']}: {str(e)}")
         finally:
             ssh_client.close()
-
-        # Add firewall compliance check
-        print("\nFirewall Rules Check:")
-        try:
-            # Get iptables rules
-            stdin, stdout, stderr = ssh_client.exec_command('sudo iptables -L -n -v')
-            iptables_output = stdout.read().decode()
-            
-            # Get default policies
-            chain_policies = {}
-            current_chain = None
-            for line in iptables_output.splitlines():
-                if line.startswith('Chain'):
-                    current_chain = line.split()[1]
-                    policy = line.split('(policy ')[1].split(')')[0] if '(policy' in line else None
-                    if policy:
-                        chain_policies[current_chain] = policy
-
-            # Check default policies
-            print("\nDefault Policy Check:")
-            for chain in ['INPUT', 'FORWARD', 'OUTPUT']:
-                expected = getattr(default_policy, chain)
-                actual = chain_policies.get(chain)
-                if actual != expected:
-                    print(f"  [NON-COMPLIANT] Chain {chain} policy is {actual}, should be {expected}")
-                else:
-                    print(f"  [COMPLIANT] Chain {chain} policy is {expected}")
-
-            # Check firewall rules
-            print("\nRule Check:")
-            for rule in firewall_rules:
-                rule_pattern = f"{rule.protocol.upper()}.*dpt:{rule.port}"
-                rule_exists = any(rule_pattern in line for line in iptables_output.splitlines())
-                
-                if rule.type == "allowed" and not rule_exists:
-                    print(f"  [NON-COMPLIANT] Required port {rule.port}/{rule.protocol} not allowed "
-                          f"(Severity: {rule.severity})")
-                elif rule.type == "blocked" and rule_exists:
-                    print(f"  [NON-COMPLIANT] Port {rule.port}/{rule.protocol} should be blocked "
-                          f"(Severity: {rule.severity})")
-                else:
-                    status = "allowed" if rule.type == "allowed" else "blocked"
-                    print(f"  [COMPLIANT] Port {rule.port}/{rule.protocol} correctly {status}")
-
-        except Exception as e:
-            print(f"  [ERROR] Failed to check firewall compliance: {str(e)}")
-
 if __name__ == "__main__":
     audit_all_devices()
