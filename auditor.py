@@ -278,16 +278,22 @@ def audit_all_devices():
     user_rules, password_policy = parse_users_baseline()
     firewall_rules, default_policy = parse_firewall_baseline()
     devices = parse_device_inventory()
+    devices_scores = {}
 
     for device in devices:
         print(f"\nAuditing {device['hostname']} ({device['ip']})...")
-        
+
+        #scores initialization. will add a score for each machine, defaults to zero.
+        #critical violations: -15 points
+        # warning violation: -5 points
+        devices_scores[device['hostname']] = 100
         # SSH config audit
         config, error = get_remote_sshd_config(
             device['hostname'],
             device['ip'],
             device['username'],
-            device['password']
+            device['password'],
+            
         )
         
         if error:
@@ -305,13 +311,25 @@ def audit_all_devices():
             actual_value = config_normalized.get(rule.parameter.lower())
             if actual_value is None:
                 print(f"  [MISSING] {rule.rule} - Parameter '{rule.parameter}' not found (Severity: {rule.severity})")
+                if rule.severity.lower() == "critical":
+                    devices_scores[device['hostname']] -= 15
+                elif rule.severity.lower() == "warning":
+                    devices_scores[device['hostname']] -= 5
             elif rule.expected.isdigit() and str(actual_value).isdigit():
                 if int(actual_value) > int(rule.expected):
                     print(f"  [NON-COMPLIANT] {rule.rule} - Expected at most '{rule.expected}', found '{actual_value}' (Severity: {rule.severity})")
+                    if rule.severity.lower() == "critical":
+                        devices_scores[device['hostname']] -= 15
+                    elif rule.severity.lower() == "warning":
+                        devices_scores[device['hostname']] -= 5
                 else:
                     print(f"  [COMPLIANT] {rule.rule}")
             elif actual_value != rule.expected:
                 print(f"  [NON-COMPLIANT] {rule.rule} - Expected '{rule.expected}', found '{actual_value}' (Severity: {rule.severity})")
+                if rule.severity.lower() == "critical":
+                    devices_scores[device['hostname']] -= 15
+                elif rule.severity.lower() == "warning":
+                    devices_scores[device['hostname']] -= 5
             else:
                 print(f"  [COMPLIANT] {rule.rule}")
 
@@ -341,8 +359,16 @@ def audit_all_devices():
                     
                     if user_rule.type == "required" and not user_exists:
                         print(f"  [NON-COMPLIANT] Required user '{user_rule.username}' not found (Severity: {user_rule.severity})")
+                        if rule.severity.lower() == "critical":
+                            devices_scores[device['hostname']] -= 15
+                        elif rule.severity.lower() == "warning":
+                            devices_scores[device['hostname']] -= 5
                     elif user_rule.type == "prohibited" and user_exists:
                         print(f"  [NON-COMPLIANT] Prohibited user '{user_rule.username}' exists (Severity: {user_rule.severity})")
+                        if rule.severity.lower() == "critical":
+                            devices_scores[device['hostname']] -= 15
+                        elif rule.severity.lower() == "warning":
+                            devices_scores[device['hostname']] -= 5
                     else:
                         status = "exists" if user_rule.type == "required" else "does not exist"
                         print(f"  [COMPLIANT] User '{user_rule.username}' {status}")
@@ -362,16 +388,28 @@ def audit_all_devices():
                     
                     if max_days > password_policy.max_days:
                         print(f"  [NON-COMPLIANT] Maximum password age ({max_days}) exceeds policy ({password_policy.max_days})")
+                        if rule.severity.lower() == "critical":
+                            devices_scores[device['hostname']] -= 15
+                        elif rule.severity.lower() == "warning":
+                            devices_scores[device['hostname']] -= 5
                     else:
                         print(f"  [COMPLIANT] Maximum password age")
                         
                     if min_days < password_policy.min_days:
                         print(f"  [NON-COMPLIANT] Minimum password age ({min_days}) below policy ({password_policy.min_days})")
+                        if rule.severity.lower() == "critical":
+                            devices_scores[device['hostname']] -= 15
+                        elif rule.severity.lower() == "warning":
+                            devices_scores[device['hostname']] -= 5
                     else:
                         print(f"  [COMPLIANT] Minimum password age")
                         
                     if warn_days < password_policy.warn_age:
                         print(f"  [NON-COMPLIANT] Password warning period ({warn_days}) below policy ({password_policy.warn_age})")
+                        if rule.severity.lower() == "critical":
+                            devices_scores[device['hostname']] -= 15
+                        elif rule.severity.lower() == "warning":
+                            devices_scores[device['hostname']] -= 5
                     else:
                         print(f"  [COMPLIANT] Password warning period")
                         
@@ -408,6 +446,10 @@ def audit_all_devices():
                     actual = chain_policies.get(chain)
                     if actual != expected:
                         print(f"  [NON-COMPLIANT] Chain {chain} policy is {actual}, should be {expected}")
+                        if rule.severity.lower() == "critical":
+                            devices_scores[device['hostname']] -= 15
+                        elif rule.severity.lower() == "warning":
+                            devices_scores[device['hostname']] -= 5
                     else:
                         print(f"  [COMPLIANT] Chain {chain} policy is {expected}")
 
@@ -423,13 +465,21 @@ def audit_all_devices():
                     if rule.type == "allowed" and not rule_exists and chain_policies.get('INPUT') != 'DROP':
                         print(f"  [NON-COMPLIANT] Required port {rule.port}/{rule.protocol} not allowed "
                             f"(Severity: {rule.severity})")
+                        if rule.severity.lower() == "critical":
+                            devices_scores[device['hostname']] -= 15
+                        elif rule.severity.lower() == "warning":
+                            devices_scores[device['hostname']] -= 5
                     elif rule.type == "blocked" and rule_exists:
                         print(f"  [NON-COMPLIANT] Port {rule.port}/{rule.protocol} should be blocked "
                             f"(Severity: {rule.severity})")
+                        if rule.severity.lower() == "critical":
+                            devices_scores[device['hostname']] -= 15
+                        elif rule.severity.lower() == "warning":
+                            devices_scores[device['hostname']] -= 5
                     else:
                         status = "allowed" if rule.type == "allowed" else "blocked"
                         print(f"  [COMPLIANT] Port {rule.port}/{rule.protocol} correctly {status}")
-
+                print(f"Final Score for {device['hostname']}: {devices_scores[device['hostname']]}")
             except Exception as e:
                 print(f"  [ERROR] Failed to check firewall compliance: {str(e)}")
         except Exception as e:
