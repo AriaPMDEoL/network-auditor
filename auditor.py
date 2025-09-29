@@ -420,7 +420,7 @@ def audit_all_devices():
                     # why is it always saying that the ports are blocked/dropped/not allowed when they are?
                     # i think the input/forward/output policy is an issue too
                     # because theyre NOT correctly DROP. they should be ACCEPT.
-                    if rule.type == "allowed" and not rule_exists:
+                    if rule.type == "allowed" and not rule_exists and chain_policies.get('INPUT') != 'DROP':
                         print(f"  [NON-COMPLIANT] Required port {rule.port}/{rule.protocol} not allowed "
                             f"(Severity: {rule.severity})")
                     elif rule.type == "blocked" and rule_exists:
