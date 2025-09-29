@@ -1,0 +1,12 @@
+devices:
+  - hostname: "vm2"
+    ip: "10.0.2.4"  # Replace with your VM2 IP
+    username: "audituser"
+    password: "AuditPass123"
+    description: "Network Device 1"
+  
+  - hostname: "vm3"
+    ip: "10.0.2.5"  # Replace with your VM3 IP
+    username: "audituser"
+    password: "AuditPass123"
+    description: "Network Device 2"
