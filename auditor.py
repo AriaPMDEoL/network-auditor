@@ -447,6 +447,7 @@ def get_firewall_violations(
                     expected.severity,
                     expected,
                     actual,
+                    f"Please set {chain} policy to {expected}"
                 )
             else:
                 print(f"  [COMPLIANT] Chain {chain} policy is {expected}")
@@ -459,9 +460,7 @@ def get_firewall_violations(
                 rule_pattern in line for line in iptables_output.splitlines()
             )
 
-            # why is it always saying that the ports are blocked/dropped/not allowed when they are?
-            # i think the input/forward/output policy is an issue too
-            # because theyre NOT correctly DROP. they should be ACCEPT.
+            
             if (
                 rule.type == "allowed"
                 and not rule_exists
@@ -480,6 +479,7 @@ def get_firewall_violations(
                     "Allowed",
                     "Not Found",
                     rule.description,
+                    f"Please allow port {rule.port}/{rule.protocol}"
                 )
             elif rule.type == "blocked" and rule_exists:
                 print(
@@ -495,6 +495,7 @@ def get_firewall_violations(
                     "Blocked",
                     "Allowed",
                     rule.description,
+                    f"Please block port {rule.port}/{rule.protocol}"
                 )
             else:
                 status = "allowed" if rule.type == "allowed" else "blocked"
@@ -537,6 +538,7 @@ def get_user_violations(user_rules, password_policy, ssh_client, violation_log, 
                     "Exists",
                     "Not Found",
                     user_rule.description,
+                    f"Please add user {user_rule.username}"
                 )
             elif user_rule.type == "prohibited" and user_exists:
                 print(
@@ -550,7 +552,7 @@ def get_user_violations(user_rules, password_policy, ssh_client, violation_log, 
                     user_rule.severity,
                     "Not Exists",
                     "Exists",
-                    user_rule.description,
+                    f"Please remove user {user_rule.username}"
                 )
             else:
                 status = "exists" if user_rule.type == "required" else "does not exist"
@@ -592,6 +594,7 @@ def get_user_violations(user_rules, password_policy, ssh_client, violation_log, 
                     user_rule.severity,
                     f"Max days <= {password_policy.max_days}",
                     f"{max_days}",
+                    f"Please set to at most {password_policy.max_days}"
                 )
             else:
                 print("  [COMPLIANT] Maximum password age")
@@ -608,6 +611,7 @@ def get_user_violations(user_rules, password_policy, ssh_client, violation_log, 
                     user_rule.severity,
                     f"Min days >= {password_policy.min_days}",
                     f"{min_days}",
+                    f"Please set to at least {password_policy.min_days}"
                 )
             else:
                 print("  [COMPLIANT] Minimum password age")
@@ -624,6 +628,7 @@ def get_user_violations(user_rules, password_policy, ssh_client, violation_log, 
                     user_rule.severity,
                     f"Warn days >= {password_policy.warn_age}",
                     f"{warn_days}",
+                    f"Please set to at least {password_policy.warn_age}"
                 )
             else:
                 print("  [COMPLIANT] Password warning period")
@@ -668,7 +673,7 @@ def get_ssh_violations(
                 rule.rule,
                 rule.severity,
                 rule.expected,
-                "Add recommendation here",
+                f"Please add {rule.parameter}",
             )
 
         elif rule.expected.isdigit() and str(actual_value).isdigit():
@@ -684,6 +689,7 @@ def get_ssh_violations(
                     rule.severity,
                     rule.expected,
                     actual_value,
+                    f"Please set to at most {rule.expected}", 
                 )
 
             else:
@@ -700,6 +706,7 @@ def get_ssh_violations(
                 rule.severity,
                 rule.expected,
                 actual_value,
+                f"Please set to {rule.expected}",
             )
 
         else:

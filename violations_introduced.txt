@@ -1,0 +1,29 @@
+VM2 VIOLATIONS:
+
+Change: added guest user
+Command: sudo useradd -m guest
+Reasoning: This is a security violation because it anonymizes anything that this user may do. This grants everyone access to the computer,
+which is a security risk. You don't know who is accessing it, so if something happens, it becomes much more difficult to track. (Warning)
+
+Change:
+Command: sudo sed -i 's/^#\?PermitEmptyPasswords.*/PermitEmptyPasswords yes/' /etc/ssh/sshd_config | sudo systemctl restart ssh
+Reasoning:
+
+Change:
+Command:
+Reasoning:
+
+-------------------------------------
+
+VM3 VIOLATIONS:
+Change: increased max tries
+Command: sudo sed -i 's/^#\?MaxAuthTries.*/MaxAuthTries 10/' /etc/ssh/sshd_config | sudo systemctl restart ssh
+Reasoning: this is a security risk because it makes it much easier to brute-force a password. (Warning)
+
+Change: Allowed port 23.
+Command: sudo ufw allow 23/tcp
+Reasoning: Unencrypted protocol. It allows remote access to your pc. (Critical)
+
+Change:
+Command:
+Reasoning:
