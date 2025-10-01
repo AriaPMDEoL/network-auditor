@@ -5,9 +5,9 @@ Command: sudo useradd -m guest
 Reasoning: This is a security violation because it anonymizes anything that this user may do. This grants everyone access to the computer,
 which is a security risk. You don't know who is accessing it, so if something happens, it becomes much more difficult to track. (Warning)
 
-Change:
+Change: Allowed empty passwords.
 Command: sudo sed -i 's/^#\?PermitEmptyPasswords.*/PermitEmptyPasswords yes/' /etc/ssh/sshd_config | sudo systemctl restart ssh
-Reasoning:
+Reasoning: People should not be able to get into your computer without a password. (CRITICAL)
 
 Change:
 Command:
@@ -24,6 +24,6 @@ Change: Allowed port 23.
 Command: sudo ufw allow 23/tcp
 Reasoning: Unencrypted protocol. It allows remote access to your pc. (Critical)
 
-Change:
-Command:
+Change: 
+Command: 
 Reasoning:
