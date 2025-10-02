@@ -1,4 +1,5 @@
 from collections import defaultdict
+import re
 import traceback
 import yaml
 import paramiko
@@ -32,55 +33,6 @@ def parse_device_inventory(filepath: str = "device_inventory.yaml") -> List[Dict
     except yaml.YAMLError as e:
         print(f"Error parsing YAML file: {e}")
         return []
-
-
-def get_remote_sshd_config(
-    hostname: str, ip: str, username: str, password: str
-) -> Tuple[Dict[str, str], Optional[str]]:
-    """
-    Connect to a remote host and retrieve its sshd_config file contents.
-
-    Args:
-        hostname (str): Device hostname
-        ip (str): Device IP address
-        username (str): SSH username
-        password (str): SSH password
-
-    Returns:
-        Tuple[Dict[str, str], Optional[str]]: Tuple containing:
-            - Dictionary of SSH configuration parameters and their values
-            - Error message if something went wrong, None otherwise
-    """
-    ssh_client = paramiko.SSHClient()
-    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    try:
-        ssh_client.connect(ip, username=username, password=password, timeout=10)
-
-        # Execute command to read sshd_config
-        stdin, stdout, stderr = ssh_client.exec_command("cat /etc/ssh/sshd_config")
-        config_content = stdout.read().decode()
-
-        # Parse the configuration content
-        config = {}
-        for line in config_content.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or line.startswith("Include"):
-                continue
-
-            parts = line.split(None, 1)
-            if len(parts) == 2:
-                key, value = parts
-                value = value.strip("\"'")
-                config[key] = value
-
-        return config, None
-
-    except Exception as e:
-        return {}, f"Error connecting to {hostname} ({ip}): {str(e)}"
-
-    finally:
-        ssh_client.close()
 
 
 @dataclass
@@ -360,15 +312,13 @@ def audit_all_devices():
         # scores initialization. will add a score for each machine, defaults to zero.
         # critical violations: -15 points
         # warning violation: -5 points
-        ssh_score = get_ssh_violations(
-            ssh_config_baseline, ssh_compliance_rules, violation_log, device
-        )
 
         # User compliance check
         print("\nUser Account Check:")
         ssh_client = paramiko.SSHClient()
         ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
+            password = device.get("password")
             ssh_client.connect(
                 device["ip"],
                 username=device["username"],
@@ -379,10 +329,14 @@ def audit_all_devices():
                 user_rules, password_policy, ssh_client, violation_log, device
             )
 
+            ssh_score = get_ssh_violations(
+                ssh_client, password, ssh_config_baseline, ssh_compliance_rules, violation_log, device
+            )
+
             # Add firewall compliance check
             print("\nFirewall Rules Check:")
             firewall_score = get_firewall_violations(
-                firewall_rules, default_policy, violation_log, device, ssh_client
+                firewall_rules, default_policy, violation_log, device, ssh_client, password
             )
             total_score = max(100 - (ssh_score + user_score + firewall_score),0)
             print(
@@ -406,12 +360,15 @@ def audit_all_devices():
 
 
 def get_firewall_violations(
-    firewall_rules, default_policy, violation_log, device, ssh_client
+    firewall_rules, default_policy, violation_log, device, ssh_client, password
 ):
     current_score = 0
     try:
         # Get iptables rules
-        _, stdout, _ = ssh_client.exec_command("sudo iptables -L -n")
+        stdin, stdout, _ = ssh_client.exec_command("sudo iptables -L -n", get_pty=True)
+        stdin.write(f"{password}\n")
+        stdin.flush()
+
         iptables_output = stdout.read().decode()
 
         # Get default policies
@@ -439,12 +396,12 @@ def get_firewall_violations(
                 print(
                     f"  [NON-COMPLIANT] Chain {chain} policy is {actual}, should be {expected}"
                 )
-                current_score += get_score(expected.severity)
+                current_score += get_score("critical")
                 add_violation(
                     violation_log,
                     device["hostname"],
                     f"Default Policy {chain}",
-                    expected.severity,
+                    "critical",
                     expected,
                     actual,
                     f"Please set {chain} policy to {expected}"
@@ -452,23 +409,51 @@ def get_firewall_violations(
             else:
                 print(f"  [COMPLIANT] Chain {chain} policy is {expected}")
 
-                # Check firewall rules
+        stdin, stdout, _ = ssh_client.exec_command("sudo ufw status", get_pty=True)
+        stdin.write(f"{password}\n")
+        stdin.flush()
+        ufw_status = stdout.read().decode()
+        
+        # Just IPv4 for now
+       
+        pattern = r'^(\d+)/(\w+)\s+(\w+)'
+        # (port, protocol, action)
+        all_ufw_lines = [m.groups() for line in ufw_status.splitlines() if (m := re.match(pattern, line.strip().lower()))]
+        
+        # Check firewall rules
         print("\nRule Check:")
         for rule in firewall_rules:
-            rule_pattern = f"{rule.protocol.upper()}.*dpt:{rule.port}"
-            rule_exists = any(
-                rule_pattern in line for line in iptables_output.splitlines()
-            )
-
+            rule_action_decoded = 'allow' if rule.action.lower() == 'accept' else 'block'
+            actual = None
+            for port, protocol, action in all_ufw_lines:
+                if int(port) == rule.port and protocol.upper() == rule.protocol.upper():
+                    actual = action
+                    break
             
-            if (
-                rule.type == "allowed"
-                and not rule_exists
-                and chain_policies.get("INPUT") != "DROP"
-            ):
+            if actual:
+                if actual.lower() == rule_action_decoded:
+                    print(
+                        f"  [COMPLIANT] Port {rule.port}/{rule.protocol} correctly {actual}"
+                    )
+                else:
+                    print(
+                        f"  [NON-COMPLIANT] Port {rule.port}/{rule.protocol} is {actual}, should be {rule.action} (Severity: {rule.severity})"
+                    )
+                    current_score += get_score(rule.severity)
+                    add_violation(
+                        violation_log,
+                        device["hostname"],
+                        f"Port {rule.port}/{rule.protocol}",
+                        rule.severity,
+                        rule.action,
+                        actual,
+                        f"Please set port {rule.port}/{rule.protocol} to {rule.action}"
+                    )
+                continue
+            
+            if rule.type == "allowed" and chain_policies.get('INPUT') == 'DROP':
                 print(
-                    f"  [NON-COMPLIANT] Required port {rule.port}/{rule.protocol} not allowed "
-                    f"(Severity: {rule.severity})"
+                    f"  [NON-COMPLIANT] Port {rule.port}/{rule.protocol} is not allowed but should be (Severity: {rule.severity})"
                 )
                 current_score += get_score(rule.severity)
                 add_violation(
@@ -477,14 +462,13 @@ def get_firewall_violations(
                     f"Port {rule.port}/{rule.protocol}",
                     rule.severity,
                     "Allowed",
-                    "Not Found",
-                    rule.description,
+                    "Not Allowed",
                     f"Please allow port {rule.port}/{rule.protocol}"
                 )
-            elif rule.type == "blocked" and rule_exists:
+                continue
+            if rule.type == "blocked" and chain_policies.get('INPUT') == 'ACCEPT':
                 print(
-                    f"  [NON-COMPLIANT] Port {rule.port}/{rule.protocol} should be blocked "
-                    f"(Severity: {rule.severity})"
+                    f"  [NON-COMPLIANT] Port {rule.port}/{rule.protocol} is not blocked but should be (Severity: {rule.severity})"
                 )
                 current_score += get_score(rule.severity)
                 add_violation(
@@ -493,15 +477,12 @@ def get_firewall_violations(
                     f"Port {rule.port}/{rule.protocol}",
                     rule.severity,
                     "Blocked",
-                    "Allowed",
-                    rule.description,
+                    "Not Blocked",
                     f"Please block port {rule.port}/{rule.protocol}"
                 )
-            else:
-                status = "allowed" if rule.type == "allowed" else "blocked"
-                print(
-                    f"  [COMPLIANT] Port {rule.port}/{rule.protocol} correctly {status}"
-                )
+                continue
+            print(f"  [COMPLIANT] Port {rule.port}/{rule.protocol} is correctly not present and covered by default policy")
+
     except Exception as e:
         print(f"  [ERROR] Failed to check firewall compliance: {str(e)}")
         print(traceback.format_exc())
@@ -537,7 +518,6 @@ def get_user_violations(user_rules, password_policy, ssh_client, violation_log, 
                     user_rule.severity,
                     "Exists",
                     "Not Found",
-                    user_rule.description,
                     f"Please add user {user_rule.username}"
                 )
             elif user_rule.type == "prohibited" and user_exists:
@@ -642,75 +622,68 @@ def get_user_violations(user_rules, password_policy, ssh_client, violation_log, 
 
 
 def get_ssh_violations(
-    ssh_config_baseline, ssh_compliance_rules, violation_log, device
+    ssh_client, password, ssh_config_baseline, ssh_compliance_rules, violation_log, device
 ):
     current_score = 0
     # SSH config audit
-    config, error = get_remote_sshd_config(
-        device["hostname"],
-        device["ip"],
-        device["username"],
-        device["password"],
-    )
+    # Execute command to read sshd_config
+    stdin, stdout, stderr = ssh_client.exec_command("sudo sshd -T", get_pty=True)
+    stdin.write(f"{password}\n")
+    stdin.flush()
+    config_content = stdout.read().decode()
 
-    print(f"Successfully retrieved SSH config from {device['hostname']}")
+    ssh_config_baseline = {k.lower(): str(v).lower() for k, v in ssh_config_baseline.items()}
+    # Parse the configuration content
+    config = {}
+    for line in config_content.splitlines():
+        line = line.strip().lower()
+        if not line or line.startswith("#") or line.startswith("Include"):
+            continue
+        
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            key, value = parts
+            value = value.strip("\"'").lower()
+            config[key] = value
 
     # SSH compliance check
-    config_normalized = {k.lower(): v for k, v in ssh_config_baseline.items()}
-    config_normalized.update({k.lower(): v for k, v in config.items()})
+    missing_keys = set(ssh_config_baseline.keys()) - set(config.keys())
 
-    print("\nSSH Compliance Check:")
+    print("\nSSH Configuration Check:")
+    if missing_keys:
+        for key in missing_keys:
+            print(f"  [MISSING] {key} - Expected '{ssh_config_baseline[key]}', found 'Not Set'")
+            current_score += get_score("critical")
+            add_violation(
+                violation_log,
+                device["hostname"],
+                f"SSH Parameter {key}",
+                "critical",
+                ssh_config_baseline[key],
+                "Not Set",
+                f"Please set to {ssh_config_baseline[key]}"
+            )
+
+
     for rule in ssh_compliance_rules:
-        actual_value = config_normalized.get(rule.parameter.lower())
-        if actual_value is None:
+        actual_value = config.get(rule.parameter.lower())
+        if str(actual_value).lower() != rule.expected:
             print(
-                f"  [MISSING] {rule.rule} - Parameter '{rule.parameter}' not found (Severity: {rule.severity})"
+                f"  [NON-COMPLIANT] {rule.parameter} - Expected '{rule.expected}', found '{actual_value}' (Severity: {rule.severity})"
             )
             current_score += get_score(rule.severity)
             add_violation(
                 violation_log,
                 device["hostname"],
-                rule.rule,
+                f"SSH Parameter {rule.parameter}",
                 rule.severity,
                 rule.expected,
-                f"Please add {rule.parameter}",
+                actual_value if actual_value is not None else "Not Set",
+                f"Please set to {rule.expected}"
             )
-
-        elif rule.expected.isdigit() and str(actual_value).isdigit():
-            if int(actual_value) > int(rule.expected):
-                print(
-                    f"  [NON-COMPLIANT] {rule.rule} - Expected at most '{rule.expected}', found '{actual_value}' (Severity: {rule.severity})"
-                )
-                current_score += get_score(rule.severity)
-                add_violation(
-                    violation_log,
-                    device["hostname"],
-                    rule.rule,
-                    rule.severity,
-                    rule.expected,
-                    actual_value,
-                    f"Please set to at most {rule.expected}", 
-                )
-
-            else:
-                print(f"  [COMPLIANT] {rule.rule}")
-        elif actual_value != rule.expected:
-            print(
-                f"  [NON-COMPLIANT] {rule.rule} - Expected '{rule.expected}', found '{actual_value}' (Severity: {rule.severity})"
-            )
-            current_score += get_score(rule.severity)
-            add_violation(
-                violation_log,
-                device["hostname"],
-                rule.rule,
-                rule.severity,
-                rule.expected,
-                actual_value,
-                f"Please set to {rule.expected}",
-            )
-
         else:
-            print(f"  [COMPLIANT] {rule.rule}")
+            print(f"  [COMPLIANT] {rule.parameter} is correctly set to '{rule.expected}'")
+
     return current_score
 
 
